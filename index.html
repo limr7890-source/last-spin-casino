@@ -108,9 +108,9 @@ function spin() {
   // pick outcome first, then dress the reels to match (house edge ~30%)
   const r = Math.random(); let mult, reels;
   const pick = () => SYMS[Math.floor(Math.random()*SYMS.length)];
-  if (r < 0.025)      { mult = 12; reels = ['7','7','7']; }
-  else if (r < 0.10)  { const s = SYMS[1+Math.floor(Math.random()*4)]; mult = 4; reels = [s,s,s]; }
-  else if (r < 0.32)  { const s = pick(); let o; do o = pick(); while (o===s); mult = 1.5; reels = [s,s,o].sort(()=>Math.random()-.5); }
+  if (r < 0.012)      { mult = 10; reels = ['7','7','7']; }
+  else if (r < 0.05)  { const s = SYMS[1+Math.floor(Math.random()*4)]; mult = 3; reels = [s,s,s]; }
+  else if (r < 0.18)  { const s = pick(); let o; do o = pick(); while (o===s); mult = 1; reels = [s,s,o].sort(()=>Math.random()-.5); }
   else { let a,b,c; do { a=pick(); b=pick(); c=pick(); } while (a===b||b===c||a===c); mult = 0; reels=[a,b,c]; }
   S.spinning = 45; S.pending = { mult, reels, bet };
   beep(300, 0.05);
@@ -268,7 +268,13 @@ function drawThug(x, boss, i) {
   R(x+1, y+5+bob, 5, 2, '#000'); R(x+7, y+5+bob, 4, 2, '#000');       // shades (facing left)
   R(x+1, y+9+bob, 6, 1, '#2a1a10');                                    // mustache
   if (boss) { R(x-4, y+10+bob, 5, 1, '#8a5a30'); R(x-5, y+10+bob, 1, 1, '#ff7a1a'); }
-  if (S.mode === 'dying' && S.deathT > 70 && i === 0) { R(x-8, y+18, 8, 3, '#333'); }  // gun
+  if (S.mode === 'dying' && S.deathT > 70 && i === 0) {                 // boss raises the gun
+    R(x-10, y+15, 10, 3, suit); R(x-16, y+14, 7, 3, '#333'); R(x-12, y+17, 2, 3, '#333');
+    if ([100,125,150].some(f => S.deathT >= f && S.deathT < f+5)) {     // muzzle flash + tracer
+      R(x-22, y+12, 6, 7, '#fff6a0'); R(x-20, y+14, 4, 3, '#ff7a1a');
+      R(S.px + 12, y+15, x - 22 - S.px - 12, 1, '#fff6a0');
+    }
+  }
 }
 
 function drawBubble(x, y, t) {
@@ -290,13 +296,13 @@ function frame() {
 
   // player walk-in
   if (S.mode === 'title') { S.px = Math.min(S.px + 0.8, 140); if (S.px >= 140) { S.mode = 'play'; log('Welcome to the Lucky Peso. Press <b>SPIN</b>.'); updateHud(); } }
-  drawPlayer(S.px, S.mode === 'over' || (S.mode === 'dying' && S.deathT > 90));
+  drawPlayer(S.px, S.mode === 'over' || (S.mode === 'dying' && S.deathT > 102));
 
   // thugs approach based on menace (or all-in when dying)
   const n = S.mode === 'dying' || S.mode === 'over' ? 4 : menace();
   S.thugs.forEach((th, i) => {
     const active = i < n;
-    const target = !active ? 340 + i*20 : (S.mode === 'dying' || S.mode === 'over') ? 166 + i*16 : 300 - (n - i) * 22 - (n >= 4 ? 30 : 0);
+    const target = !active ? 340 + i*20 : (S.mode === 'dying' || S.mode === 'over') ? 196 + i*18 : 300 - (n - i) * 22 - (n >= 4 ? 30 : 0);
     th.x += (target - th.x) * 0.03;
     if (th.x < 330) drawThug(th.x, i === 0 && n >= 4, i);
   });
@@ -313,11 +319,18 @@ function frame() {
   // death sequence
   if (S.mode === 'dying') {
     S.deathT++;
-    if (S.deathT === 90) { S.flash = 1; S.shake = 14; beep(80, .4, 'sawtooth', .15); beep(60, .5, 'square', .1); }
-    if (S.deathT > 200) { S.mode = 'over'; updateHud(); }
+    if (S.deathT === 70) say('Adios, amigo.');
+    if ([100,125,150].includes(S.deathT)) { S.flash = 0.8; S.shake = 14; beep(90, .35, 'sawtooth', .2); beep(50, .45, 'square', .15); }
+    if (S.deathT > 260) { S.mode = 'over'; updateHud(); }
   }
   if (S.flash > 0) { ctx.fillStyle = `rgba(255,255,255,${S.flash})`; ctx.fillRect(0,0,W,H); S.flash -= 0.05; }
-  if (S.mode === 'over' || (S.mode === 'dying' && S.deathT > 90)) R(S.px - 30, 160, 34, 4, '#8a0010');  // blood pool
+  if (S.mode === 'over' || (S.mode === 'dying' && S.deathT > 102)) {    // blood pool spreads
+    const b = S.mode === 'over' ? 1 : Math.min(1, (S.deathT - 102) / 120);
+    R(S.px - 10 - 26*b, 159, 20 + 40*b, 3 + 3*b, '#8a0010'); R(S.px - 4 - 18*b, 160, 10 + 26*b, 2, '#b3001b');
+  }
+  if (S.mode === 'dying' && S.deathT >= 100 && S.deathT < 175) {
+    text('BANG!', 160, 50 + (S.deathT % 25), '#e63946', 16, 'center');
+  }
   ctx.restore();
 
   if (S.mode === 'over') {
