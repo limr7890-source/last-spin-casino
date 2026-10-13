@@ -62,9 +62,26 @@ const $ = id => document.getElementById(id);
 
 // ---------- audio ----------
 let ac;
-function beep(f, d = 0.08, type = 'square', v = 0.05) {
+function getAC() {                                  // lazily create, and resume if the browser suspended it
   try {
     ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    if (ac.state === 'suspended') ac.resume();
+  } catch (e) { return null; }
+  return ac;
+}
+function unlockAudio() {                            // must run inside a user gesture (autoplay policy)
+  const c = getAC(); if (!c) return;
+  try {                                             // iOS Safari only unlocks after something actually plays
+    const src = c.createBufferSource(); src.buffer = c.createBuffer(1, 1, 22050);
+    src.connect(c.destination); src.start(0);
+  } catch (e) {}
+  if (c.state === 'running') ['pointerdown','touchstart','keydown','click'].forEach(ev => document.removeEventListener(ev, unlockAudio, true));
+}
+['pointerdown','touchstart','keydown','click'].forEach(ev => document.addEventListener(ev, unlockAudio, true));
+document.addEventListener('visibilitychange', () => { if (!document.hidden && ac && ac.state === 'suspended') ac.resume(); });
+function beep(f, d = 0.08, type = 'square', v = 0.05) {
+  try {
+    if (!getAC()) return;
     const o = ac.createOscillator(), g = ac.createGain();
     o.type = type; o.frequency.value = f; g.gain.value = v;
     o.connect(g); g.connect(ac.destination); o.start();
@@ -74,7 +91,7 @@ function beep(f, d = 0.08, type = 'square', v = 0.05) {
 
 function noise(d = 0.2, v = 0.2, lp = 1200) {    // filtered white-noise burst (gunshots, register drawer)
   try {
-    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    if (!getAC()) return;
     const buf = ac.createBuffer(1, ac.sampleRate * d, ac.sampleRate), data = buf.getChannelData(0);
     for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2 - 1) * (1 - i/data.length) ** 2;
     const src = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
@@ -84,7 +101,7 @@ function noise(d = 0.2, v = 0.2, lp = 1200) {    // filtered white-noise burst (
 }
 function thud() {                                   // low bass warning when a thug steps in
   try {
-    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    if (!getAC()) return;
     const o = ac.createOscillator(), g = ac.createGain();
     o.type = 'sine'; o.frequency.setValueAtTime(110, ac.currentTime); o.frequency.exponentialRampToValueAtTime(35, ac.currentTime + 0.4);
     g.gain.setValueAtTime(0.5, ac.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.5);
