@@ -72,6 +72,31 @@ function beep(f, d = 0.08, type = 'square', v = 0.05) {
   } catch (e) {}
 }
 
+function noise(d = 0.2, v = 0.2, lp = 1200) {    // filtered white-noise burst (gunshots, register drawer)
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    const buf = ac.createBuffer(1, ac.sampleRate * d, ac.sampleRate), data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2 - 1) * (1 - i/data.length) ** 2;
+    const src = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    src.buffer = buf; f.type = 'lowpass'; f.frequency.value = lp; g.gain.value = v;
+    src.connect(f); f.connect(g); g.connect(ac.destination); src.start();
+  } catch (e) {}
+}
+function thud() {                                   // low bass warning when a thug steps in
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(110, ac.currentTime); o.frequency.exponentialRampToValueAtTime(35, ac.currentTime + 0.4);
+    g.gain.setValueAtTime(0.5, ac.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.5);
+    o.connect(g); g.connect(ac.destination); o.start(); o.stop(ac.currentTime + 0.5);
+  } catch (e) {}
+}
+function kaching() {                                // cash register: drawer clunk + two bells
+  noise(0.06, 0.25, 3000); setTimeout(() => { beep(1568, .25, 'triangle', .08); beep(2093, .3, 'square', .03); }, 60);
+  setTimeout(() => beep(2637, .4, 'triangle', .07), 160);
+}
+function gunshot() { noise(0.35, 0.6, 900); beep(70, .3, 'square', .15); setTimeout(() => thud(), 40); }
+
 // ---------- state ----------
 const ITEMS = [ // ordered by value: pawning cheap stuff while valuables remain insults the boss
   { id:'watch', name:'Gold Watch', value:220 },
@@ -89,7 +114,7 @@ let S;
 function reset() {
   S = { mode:'title', money:300, bet:25, anger:0, spins:0, peak:300, owned:new Set(ITEMS.map(i=>i.id)),
         pawned:[], reels:['7','7','7'], spinning:0, px:-20, t:0, bubble:'', bubbleT:0,
-        thugs:[0,1,2,3].map(i=>({x:340+i*20})), shake:0, flash:0, deathT:0, coins:[], debtTimes:0 };
+        thugs:[0,1,2,3].map(i=>({x:340+i*20})), lastMenace:0, shake:0, flash:0, deathT:0, coins:[], debtTimes:0 };
   updateHud();
 }
 
@@ -125,9 +150,13 @@ function settle() {
   const before = menace();
   if (win > 0) {
     for (let i = 0; i < Math.min(30, win/5); i++) S.coins.push({ x:85, y:95, vx:(Math.random()-.5)*3, vy:-Math.random()*3-1 });
-    if (mult >= 12) { log('<b>JACKPOT!</b> 7-7-7 pays $' + win + '. The house frowns.'); [523,659,784,1046].forEach((f,i)=>setTimeout(()=>beep(f,.15),i*90)); }
-    else log('You win <b>$' + win + '</b>.'), beep(660, .1), setTimeout(()=>beep(880,.1), 90);
-  } else { log('Nothing. <b>-$' + bet + '</b>'); beep(140, .15, 'sawtooth'); }
+    kaching();
+    if (mult >= 10) { log('<b>JACKPOT!</b> 7-7-7 pays $' + win + '. The house frowns.'); [523,659,784,1046].forEach((f,i)=>setTimeout(()=>beep(f,.15),300+i*90)); }
+    else log('You win <b>$' + win + '</b>.');
+  } else {
+    log('Nothing. <b>-$' + bet + '</b>'); beep(140, .15, 'sawtooth');
+    if (S.money < 0) S.shake = 10;                    // losing while in debt rattles the screen
+  }
 
   if (S.money < 0) {
     S.debtTimes++;
@@ -163,6 +192,24 @@ function pawn(id) {
   updateHud();
 }
 
+function wrap(t, n) {
+  const out = []; let cur = '';
+  t.split(' ').forEach(w => { if ((cur + ' ' + w).trim().length > n) { out.push(cur); cur = w; } else cur = (cur + ' ' + w).trim(); });
+  return out.concat(cur);
+}
+function verdict() {                    // a roast based on what you pawned and in which order
+  const p = S.pawned, first = p[0];
+  if (!p.length) return 'Died fully dressed, watch on. Classy to the very end.';
+  if (first === 'Pants') return 'Opened negotiations with your pants. Bold. Fatal.';
+  if (first === 'Shirt') return 'Went shirtless before selling the gold. Peak alpha. Peak dead.';
+  if (first === 'Shoes' || first === 'Fedora') return 'Offered the cartel used footwear and hats. Insulting.';
+  if (p.includes('Pants')) return 'Died in boxers. The cartel will tell this story for years.';
+  if (first === 'Wedding Ring') return 'Pawned the ring first. Your spouse would have done worse.';
+  if (first === 'Gold Watch' && S.anger < 50) return 'Textbook pawning. A responsible degenerate. Still dead.';
+  if (S.peak >= 600) return 'Was up big. Kept spinning. Every gambler ever.';
+  if (S.anger > 70) return 'Insulted the cartel. Briefly regretted it.';
+  return 'The house always wins. The cartel always collects.';
+}
 function die(reason) {
   S.mode = 'dying'; S.deathT = 0; S.reason = reason;
   say(S.anger > 70 ? 'Nobody insults the cartel.' : 'Nothing personal, amigo.');
@@ -300,6 +347,8 @@ function frame() {
 
   // thugs approach based on menace (or all-in when dying)
   const n = S.mode === 'dying' || S.mode === 'over' ? 4 : menace();
+  if (S.mode === 'play' && n > S.lastMenace) thud();
+  S.lastMenace = n;
   S.thugs.forEach((th, i) => {
     const active = i < n;
     const target = !active ? 340 + i*20 : (S.mode === 'dying' || S.mode === 'over') ? 196 + i*18 : 300 - (n - i) * 22 - (n >= 4 ? 30 : 0);
@@ -311,7 +360,7 @@ function frame() {
   S.coins = S.coins.filter(c => { c.x += c.vx; c.y += c.vy; c.vy += 0.15; R(c.x, c.y, 3, 3, '#f7c948'); return c.y < 160; });
 
   // spin resolution
-  if (S.spinning > 0) { S.spinning--; if (S.spinning % 6 === 0) beep(500 + Math.random()*300, .03); if (S.spinning === 0) settle(); }
+  if (S.spinning > 0) { S.spinning--; if (S.spinning % 3 === 0) beep(900 + Math.random()*500, .015, 'square', .04); if (S.spinning === 0) settle(); }
 
   // speech bubble from nearest thug
   if (S.bubbleT > 0 && S.thugs[0].x < 320) { S.bubbleT--; drawBubble(S.thugs[0].x + 6, 108, S.bubble); }
@@ -320,7 +369,8 @@ function frame() {
   if (S.mode === 'dying') {
     S.deathT++;
     if (S.deathT === 70) say('Adios, amigo.');
-    if ([100,125,150].includes(S.deathT)) { S.flash = 0.8; S.shake = 14; beep(90, .35, 'sawtooth', .2); beep(50, .45, 'square', .15); }
+    if ([100,125,150].includes(S.deathT)) { S.flash = 0.8; S.shake = 14; gunshot(); }
+    if (S.deathT === 112) thud();                     // body hits the floor
     if (S.deathT > 260) { S.mode = 'over'; updateHud(); }
   }
   if (S.flash > 0) { ctx.fillStyle = `rgba(255,255,255,${S.flash})`; ctx.fillRect(0,0,W,H); S.flash -= 0.05; }
@@ -333,17 +383,29 @@ function frame() {
   }
   ctx.restore();
 
+  // pulsing red vignette, stronger and faster as the boss gets angrier
+  if (S.anger > 0 && S.mode !== 'over') {
+    const a = S.anger / 100, pulse = 0.5 + 0.5 * Math.sin(S.t * (0.04 + a * 0.12));
+    const g = ctx.createRadialGradient(W/2, H/2, H * (0.75 - a * 0.35), W/2, H/2, W * 0.62);
+    g.addColorStop(0, 'rgba(120,0,0,0)'); g.addColorStop(1, `rgba(150,0,10,${(0.25 + 0.55 * a) * (0.6 + 0.4 * pulse)})`);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  }
+
   if (S.mode === 'over') {
-    ctx.fillStyle = 'rgba(0,0,0,.72)'; ctx.fillRect(0,0,W,H);
-    text('GAME OVER', 160, 30, '#e63946', 16, 'center');
-    text(S.reason.length > 36 ? S.reason.slice(0,36) : S.reason, 160, 58, '#f1e9da', 8, 'center');
-    if (S.reason.length > 36) text(S.reason.slice(36), 160, 70, '#f1e9da', 8, 'center');
-    text('Spins: ' + S.spins + '   Peak: $' + S.peak, 160, 90, '#f7c948', 8, 'center');
-    text('Boss anger: ' + S.anger + '%', 160, 104, S.anger > 70 ? '#e63946' : '#f7c948', 8, 'center');
-    text('Pawn order:', 160, 120, '#9a8aa8', 8, 'center');
-    const order = S.pawned.length ? S.pawned.join(', ') : 'nothing';
-    text(order.slice(0, 38), 160, 132, '#f1e9da', 8, 'center'); if (order.length > 38) text(order.slice(38, 76), 160, 144, '#f1e9da', 8, 'center');
-    text('Click to try again', 160, 162, Math.floor(S.t/30)%2 ? '#4ade80' : '#1a5a30', 8, 'center');
+    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0,0,W,H);
+    R(14, 6, 292, 168, '#c9a227'); R(17, 9, 286, 162, '#120a18'); R(20, 12, 280, 156, '#1b1022');
+    text('GAME OVER', 160, 17, '#e63946', 16, 'center');
+    const row = (label, val, y, c) => { text(label, 30, y, '#9a8aa8'); text(val, 290, y, c || '#f7c948', 8, 'right');
+      for (let x = 30 + label.length*8 + 4; x < 290 - val.length*8 - 4; x += 6) R(x, y+6, 2, 1, '#5a3a6a'); };
+    row('TOTAL SPINS', String(S.spins), 42);
+    row('MAX BALANCE', '$' + S.peak, 54);
+    row('BOSS ANGER', S.anger + '%', 66, S.anger > 70 ? '#e63946' : '#f7c948');
+    row('ITEMS PAWNED', String(S.pawned.length), 78);
+    text('CAUSE OF DEATH', 30, 94, '#9a8aa8');
+    wrap(S.reason, 33).slice(0, 2).forEach((l, i) => text(l, 30, 105 + i*10, '#f1e9da'));
+    text('VERDICT', 30, 128, '#9a8aa8');
+    wrap(verdict(), 33).slice(0, 2).forEach((l, i) => text(l, 30, 139 + i*10, '#4ade80'));
+    text('CLICK TO TRY AGAIN', 160, 159, Math.floor(S.t/30)%2 ? '#f7c948' : '#5a4210', 8, 'center');
   } else if (S.mode === 'title' && S.px < 0) {
     ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0,0,W,H);
     text('LAST SPIN', 160, 60, '#f7c948', 16, 'center');
