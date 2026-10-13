@@ -203,15 +203,18 @@ function pawn(id) {
   const richer = ITEMS.filter(i => S.owned.has(i.id) && i.value > item.value).length;
   S.owned.delete(id); S.pawned.push(item.name);
   S.money += item.value;
-  const insult = 6 + richer * 13;
-  S.anger = Math.min(100, S.anger + insult);
-  beep(200, .12, 'triangle');
-  const lines = richer < 3 ? ['Hand it over.', 'That barely covers the interest.']
+  // expensive gifts (watch, chain, ring) calm the boss down; cheap junk while you still wear gold enrages him
+  const expensive = item.value >= 100;
+  const delta = expensive ? -Math.round(item.value / 8) : 6 + richer * 13;
+  S.anger = Math.max(0, Math.min(100, S.anger + delta));
+  if (expensive) { kaching(); } else beep(200, .12, 'triangle');
+  const lines = expensive ? ['Now we are talking, amigo.', 'Muy bien. The boss smiles.', 'Hand it over.']
+              : richer < 3 ? ['Hand it over.', 'That barely covers the interest.']
               : richer < 5 ? ['You insult me with ' + item.name.toLowerCase() + '?', 'I SEE the gold, idiot.']
               : ['Your ' + item.name.toLowerCase() + '?! While you wear GOLD?!', 'You think this is a joke?!'];
   say(lines[Math.floor(Math.random()*lines.length)]);
-  log('Pawned <b>' + item.name + '</b> for $' + item.value + '. Boss anger +' + insult + '.');
-  S.shake = 14 + richer * 2;                          // strong shake on every pawn
+  log('Pawned <b>' + item.name + '</b> for $' + item.value + '. Boss anger ' + (delta < 0 ? '' : '+') + delta + '.');
+  S.shake = expensive ? 6 : 14 + richer * 2;          // strong shake on insulting pawns
   if (S.anger >= 100) return die('You pawned your ' + item.name.toLowerCase() + ' while still wearing gold.');
   if (S.money < 0 && !S.owned.size) return die('Naked, broke, and still in debt.');
   updateHud();
