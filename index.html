@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Last Spin</title>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#0b0710; --panel:#1b1022; --gold:#f7c948; --red:#e63946; --text:#f1e9da; --muted:#9a8aa8; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:"Press Start 2P", monospace;
+         display:flex; flex-direction:column; align-items:center; padding:12px 16px; min-height:100vh; }
+  h1 { font-size:18px; color:var(--gold); text-shadow:2px 2px 0 var(--red); margin:6px 0 10px; letter-spacing:2px; }
+  #wrap { width:100%; max-width:960px; }
+  canvas { width:100%; image-rendering:pixelated; image-rendering:crisp-edges; border:4px solid #3a2448; display:block; background:#000; cursor:pointer; }
+  #hud { display:flex; flex-wrap:wrap; gap:10px; justify-content:space-between; align-items:center; margin:10px 0; font-size:11px; }
+  #money { color:var(--gold); font-size:14px; }
+  #money.neg { color:var(--red); }
+  .bar { width:180px; height:12px; border:2px solid #5a3a6a; background:#000; position:relative; }
+  .bar > div { height:100%; background:var(--red); width:0; transition:width .4s; }
+  #controls { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin:8px 0; }
+  button { font-family:inherit; font-size:11px; padding:10px 12px; background:var(--panel); color:var(--text);
+           border:3px solid #5a3a6a; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--gold); color:var(--gold); }
+  button:disabled { opacity:.35; cursor:not-allowed; }
+  #spin { background:#7a1020; border-color:var(--red); font-size:13px; padding:10px 22px; }
+  #pawn { display:none; margin-top:6px; padding:10px; border:3px dashed var(--red); background:#1a0a10; }
+  #pawn h2 { font-size:12px; color:var(--red); margin:0 0 8px; }
+  #pawn .items { display:flex; flex-wrap:wrap; gap:6px; }
+  #log { font-size:10px; line-height:1.8; color:var(--muted); min-height:40px; margin-top:8px; }
+  #log b { color:var(--text); font-weight:normal; }
+  .help { font-size:9px; color:var(--muted); margin-top:14px; line-height:1.8; text-align:center; }
+</style>
+</head>
+<body>
+<h1>LAST SPIN</h1>
+<div id="wrap">
+  <canvas id="c" width="320" height="180"></canvas>
+  <div id="hud">
+    <span id="money">$300</span>
+    <span>BET: <span id="bet">$25</span></span>
+    <span style="display:flex;align-items:center;gap:8px">CARTEL ANGER <span class="bar"><div id="anger"></div></span></span>
+  </div>
+  <div id="controls">
+    <button id="betDown">BET -</button>
+    <button id="spin">SPIN</button>
+    <button id="betUp">BET +</button>
+  </div>
+  <div id="pawn">
+    <h2>YOU OWE THE CARTEL. PAWN SOMETHING.</h2>
+    <div class="items" id="items"></div>
+  </div>
+  <div id="log">Click the screen to walk into the Lucky Peso Casino.</div>
+  <p class="help">SPACE = spin &middot; arrows = change bet<br>Lose your money and the cartel comes closer. Choose wisely what you pawn first.</p>
+</div>
+
+<script>
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+const W = 320, H = 180;
+const $ = id => document.getElementById(id);
+
+// ---------- audio ----------
+let ac;
+function beep(f, d = 0.08, type = 'square', v = 0.05) {
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = type; o.frequency.value = f; g.gain.value = v;
+    o.connect(g); g.connect(ac.destination); o.start();
+    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + d); o.stop(ac.currentTime + d);
+  } catch (e) {}
+}
+
+// ---------- state ----------
+const ITEMS = [ // ordered by value: pawning cheap stuff while valuables remain insults the boss
+  { id:'watch', name:'Gold Watch', value:220 },
+  { id:'chain', name:'Gold Chain', value:160 },
+  { id:'ring',  name:'Wedding Ring', value:120 },
+  { id:'jacket',name:'Jacket', value:70 },
+  { id:'hat',   name:'Fedora', value:45 },
+  { id:'shoes', name:'Shoes', value:35 },
+  { id:'shirt', name:'Shirt', value:20 },
+  { id:'pants', name:'Pants', value:15 },
+];
+const SYMS = ['7', '$', '#', '@', '%'];
+const SYMCOL = { '7':'#e63946', '$':'#4ade80', '#':'#60a5fa', '@':'#f472b6', '%':'#f7c948' };
+let S;
+function reset() {
+  S = { mode:'title', money:300, bet:25, anger:0, spins:0, peak:300, owned:new Set(ITEMS.map(i=>i.id)),
+        pawned:[], reels:['7','7','7'], spinning:0, px:-20, t:0, bubble:'', bubbleT:0,
+        thugs:[0,1,2,3].map(i=>({x:340+i*20})), shake:0, flash:0, deathT:0, coins:[], debtTimes:0 };
+  updateHud();
+}
+
+// ---------- logic ----------
+function menace() {           // how many cartel members are in the room
+  const m = S.money;
+  if (m < 0) return 4; if (m < 80) return 3; if (m < 160) return 2; if (m < 240) return 1; return 0;
+}
+function log(html) { $('log').innerHTML = html; }
+function say(t) { S.bubble = t; S.bubbleT = 220; }
+
+function spin() {
+  if (S.mode !== 'play' || S.spinning || S.money < 0) return;
+  const bet = S.bet;
+  S.money -= bet; S.spins++;
+  // pick outcome first, then dress the reels to match (house edge ~30%)
+  const r = Math.random(); let mult, reels;
+  const pick = () => SYMS[Math.floor(Math.random()*SYMS.length)];
+  if (r < 0.025)      { mult = 12; reels = ['7','7','7']; }
+  else if (r < 0.10)  { const s = SYMS[1+Math.floor(Math.random()*4)]; mult = 4; reels = [s,s,s]; }
+  else if (r < 0.32)  { const s = pick(); let o; do o = pick(); while (o===s); mult = 1.5; reels = [s,s,o].sort(()=>Math.random()-.5); }
+  else { let a,b,c; do { a=pick(); b=pick(); c=pick(); } while (a===b||b===c||a===c); mult = 0; reels=[a,b,c]; }
+  S.spinning = 45; S.pending = { mult, reels, bet };
+  beep(300, 0.05);
+  updateHud();
+}
+
+function settle() {
+  const { mult, reels, bet } = S.pending;
+  S.reels = reels;
+  const win = Math.round(bet * mult);
+  S.money += win; S.peak = Math.max(S.peak, S.money);
+  const before = menace();
+  if (win > 0) {
+    for (let i = 0; i < Math.min(30, win/5); i++) S.coins.push({ x:85, y:95, vx:(Math.random()-.5)*3, vy:-Math.random()*3-1 });
+    if (mult >= 12) { log('<b>JACKPOT!</b> 7-7-7 pays $' + win + '. The house frowns.'); [523,659,784,1046].forEach((f,i)=>setTimeout(()=>beep(f,.15),i*90)); }
+    else log('You win <b>$' + win + '</b>.'), beep(660, .1), setTimeout(()=>beep(880,.1), 90);
+  } else { log('Nothing. <b>-$' + bet + '</b>'); beep(140, .15, 'sawtooth'); }
+
+  if (S.money < 0) {
+    S.debtTimes++;
+    S.anger = Math.min(100, S.anger + 6 * S.debtTimes);
+    say(S.debtTimes === 1 ? 'You owe us, amigo.' : 'AGAIN?! Pay up.');
+    log('You are <b>$' + (-S.money) + '</b> in debt to the cartel. Pawn something.');
+    if (!S.owned.size) return die('You had nothing left to give.');
+    if (S.anger >= 100) return die('The boss ran out of patience.');
+  } else if (menace() > before) {
+    say(['', 'Nice watch...', 'Luck running out?', 'We are watching.'][menace()] || '');
+  }
+  updateHud();
+}
+
+function pawn(id) {
+  if (S.mode !== 'play' || S.money >= 0 || !S.owned.has(id)) return;
+  const item = ITEMS.find(i => i.id === id);
+  const richer = ITEMS.filter(i => S.owned.has(i.id) && i.value > item.value).length;
+  S.owned.delete(id); S.pawned.push(item.name);
+  S.money += item.value;
+  const insult = 6 + richer * 13;
+  S.anger = Math.min(100, S.anger + insult);
+  beep(200, .12, 'triangle');
+  const lines = richer === 0 ? ['Smart. We like the ' + item.name.toLowerCase() + '.', 'Good. Keep going.']
+              : richer < 3 ? ['Hm. You hiding something?', 'That is not your best.']
+              : richer < 5 ? ['You insult me with ' + item.name.toLowerCase() + '?', 'I SEE the gold, idiot.']
+              : ['Your ' + item.name.toLowerCase() + '?! While you wear GOLD?!', 'You think this is a joke?!'];
+  say(lines[Math.floor(Math.random()*lines.length)]);
+  log('Pawned <b>' + item.name + '</b> for $' + item.value + '. Boss anger +' + insult + '.');
+  S.shake = 6 + richer * 2;
+  if (S.anger >= 100) return die('You pawned your ' + item.name.toLowerCase() + ' while still wearing gold.');
+  if (S.money < 0 && !S.owned.size) return die('Naked, broke, and still in debt.');
+  updateHud();
+}
+
+function die(reason) {
+  S.mode = 'dying'; S.deathT = 0; S.reason = reason;
+  say(S.anger > 70 ? 'Nobody insults the cartel.' : 'Nothing personal, amigo.');
+  log('<b>' + reason + '</b>');
+  updateHud();
+}
+
+function updateHud() {
+  const m = $('money'); m.textContent = (S.money < 0 ? '-$' : '$') + Math.abs(S.money); m.className = S.money < 0 ? 'neg' : '';
+  $('bet').textContent = '$' + S.bet;
+  $('anger').style.width = S.anger + '%';
+  const playing = S.mode === 'play';
+  $('spin').disabled = !playing || S.money < 0 || S.spinning > 0;
+  $('spin').textContent = S.mode === 'over' ? 'TRY AGAIN' : 'SPIN';
+  if (S.mode === 'over') $('spin').disabled = false;
+  const showPawn = playing && S.money < 0;
+  $('pawn').style.display = showPawn ? 'block' : 'none';
+  if (showPawn) {
+    $('items').innerHTML = '';
+    ITEMS.filter(i => S.owned.has(i.id)).forEach(i => {
+      const b = document.createElement('button'); b.textContent = i.name + ' $' + i.value; b.onclick = () => pawn(i.id);
+      $('items').appendChild(b);
+    });
+  }
+}
+
+// ---------- drawing ----------
+const R = (x,y,w,h,c) => { ctx.fillStyle = c; ctx.fillRect(Math.round(x),Math.round(y),w,h); };
+function text(t, x, y, c, size = 8, align = 'left') {
+  ctx.font = size + 'px "Press Start 2P", monospace'; ctx.textAlign = align; ctx.textBaseline = 'top';
+  ctx.fillStyle = '#000'; ctx.fillText(t, x+1, y+1); ctx.fillStyle = c; ctx.fillText(t, x, y);
+}
+
+function drawRoom() {
+  R(0,0,W,H,'#1a0f24');
+  for (let x = 0; x < W; x += 16) R(x, 0, 8, 120, '#20132c');          // wallpaper stripes
+  R(0, 116, W, 4, '#c9a227');                                           // gold trim
+  for (let y = 120; y < H; y += 8) for (let x = (y/8)%2*8; x < W; x += 16) { R(x,y,8,8,'#5a0f1e'); R(x+8,y,8,8,'#6e1426'); }
+  // neon sign
+  const on = Math.floor(S.t/30) % 4 !== 0;
+  R(96, 8, 128, 22, '#0a0610'); R(96,8,128,2,'#ff4fd8'); R(96,28,128,2,'#ff4fd8');
+  text('LUCKY PESO', 160, 15, on ? '#ff4fd8' : '#4a1a44', 8, 'center');
+  // marquee lights
+  for (let i = 0; i < 20; i++) R(8 + i*16, 38, 3, 3, (i + Math.floor(S.t/10)) % 3 ? '#f7c948' : '#5a4210');
+  // background slot machines
+  [[250,70],[280,70],[10,74]].forEach(([x,y]) => { R(x,y,22,46,'#3a2a50'); R(x+3,y+6,16,10,'#111'); R(x+2,y,18,4,'#c9a227'); });
+}
+
+function drawMachine() {
+  const x = 46, y = 52;
+  R(x-2, y-6, 84, 8, '#c9a227'); R(x, y, 80, 108, '#8a1c2c'); R(x+4, y+4, 72, 100, '#a8243a');
+  text('777', x+40, y+8, '#f7c948', 8, 'center');
+  R(x+8, y+22, 64, 30, '#111');
+  for (let i = 0; i < 3; i++) {
+    const cx = x + 10 + i*21; R(cx, y+24, 18, 26, '#f1e9da');
+    const sym = S.spinning > i*10 ? SYMS[Math.floor(Math.random()*SYMS.length)] : S.reels[i];
+    text(sym, cx + 10, y+33, SYMCOL[sym], 8, 'center');
+  }
+  R(x+8, y+60, 64, 14, '#111'); text(S.spinning ? '...' : 'BET ' + S.bet, x+40, y+64, '#4ade80', 8, 'center');
+  R(x+16, y+84, 48, 6, '#000');                                   // coin tray
+  // lever
+  const pulled = S.spinning > 30;
+  R(x+80, y+40, 4, 10, '#777');
+  R(x+82, pulled ? y+46 : y+12, 3, pulled ? 8 : 30, '#bbb');
+  R(x+80, pulled ? y+52 : y+8, 7, 7, '#e63946');
+}
+
+function drawPlayer(x, dead) {
+  const o = S.owned, skin = '#d9a066';
+  ctx.save();
+  if (dead) { ctx.translate(x + 6, 158); ctx.rotate(-Math.PI/2); ctx.translate(-x - 6, -158); }
+  const y = 158 - 42, bob = (!dead && S.mode==='title') ? (Math.floor(S.t/6)%2) : 0;
+  // shoes / feet
+  R(x, y+39, 5, 3, o.has('shoes') ? '#2b1a10' : skin); R(x+7, y+39, 5, 3, o.has('shoes') ? '#2b1a10' : skin);
+  // legs
+  if (o.has('pants')) { R(x+1, y+26-bob, 4, 13+bob, '#24305e'); R(x+7, y+26, 4, 13, '#24305e'); }
+  else { R(x+1, y+26, 4, 13, skin); R(x+7, y+26, 4, 13, skin); R(x, y+24, 12, 6, '#f5f5f5'); R(x+3,y+26,2,2,'#e63946'); R(x+8,y+25,2,2,'#e63946'); }
+  // torso
+  R(x, y+12, 12, 14, o.has('shirt') ? '#eeeeee' : skin);
+  if (!o.has('shirt')) { R(x+3, y+16, 1, 1, '#8a5a30'); R(x+8, y+16, 1, 1, '#8a5a30'); }
+  if (o.has('jacket')) { R(x, y+12, 4, 14, '#6a2c91'); R(x+8, y+12, 4, 14, '#6a2c91'); }
+  if (o.has('chain')) { R(x+3, y+13, 6, 1, '#f7c948'); R(x+5, y+14, 2, 2, '#f7c948'); }
+  // arm reaching to lever
+  R(x+10, y+15, 6, 3, o.has('jacket') ? '#6a2c91' : o.has('shirt') ? '#eeeeee' : skin); R(x+15, y+15, 3, 3, skin);
+  if (o.has('watch')) R(x+13, y+15, 2, 3, '#f7c948');
+  if (o.has('ring')) R(x+17, y+16, 1, 1, '#fff6a0');
+  R(x-1, y+14, 2, 10, o.has('jacket') ? '#6a2c91' : o.has('shirt') ? '#eeeeee' : skin);
+  // head
+  R(x+2, y+2, 9, 10, skin); R(x+2, y+1, 9, 3, '#2a1a10'); R(x+8, y+5, 1, 2, '#000'); R(x+6, y+9, 4, 1, S.money < 0 ? '#5a2010' : '#8a3a20');
+  if (S.money < 80) R(x+10, y+4, 1, 2, '#7fd3ff');                    // sweat
+  if (o.has('hat')) { R(x, y, 14, 2, '#3b2a20'); R(x+2, y-4, 10, 4, '#3b2a20'); R(x+2, y-1, 10, 1, '#a8243a'); }
+  ctx.restore();
+}
+
+function drawThug(x, boss, i) {
+  const y = 116, bob = Math.floor((S.t + i*7)/20) % 2, suit = boss ? '#f1e9da' : '#151515';
+  R(x, y+39, 5, 3, '#000'); R(x+7, y+39, 5, 3, '#000');
+  R(x+1, y+26, 4, 13, suit); R(x+7, y+26, 4, 13, suit);
+  R(x-1, y+12+bob, 14, 15, suit); R(x+4, y+12+bob, 4, 10, boss ? '#a8243a' : '#eee');
+  if (boss) R(x+3, y+14+bob, 6, 1, '#f7c948');
+  R(x-3, y+14+bob, 3, 10, suit);
+  R(x+1, y+1+bob, 10, 11, '#b07a4a'); R(x+1, y+bob, 10, 3, '#111');
+  R(x+1, y+5+bob, 5, 2, '#000'); R(x+7, y+5+bob, 4, 2, '#000');       // shades (facing left)
+  R(x+1, y+9+bob, 6, 1, '#2a1a10');                                    // mustache
+  if (boss) { R(x-4, y+10+bob, 5, 1, '#8a5a30'); R(x-5, y+10+bob, 1, 1, '#ff7a1a'); }
+  if (S.mode === 'dying' && S.deathT > 70 && i === 0) { R(x-8, y+18, 8, 3, '#333'); }  // gun
+}
+
+function drawBubble(x, y, t) {
+  ctx.font = '8px "Press Start 2P", monospace';
+  const lines = []; let cur = '';
+  t.split(' ').forEach(w => { if ((cur + ' ' + w).trim().length > 16) { lines.push(cur); cur = w; } else cur = (cur + ' ' + w).trim(); });
+  lines.push(cur);
+  const w = Math.max(...lines.map(l => ctx.measureText(l).width)) + 8, h = lines.length * 10 + 6;
+  const bx = Math.max(2, Math.min(W - w - 2, x - w/2)), by = y - h;
+  R(bx, by, w, h, '#fff'); R(bx + w/2 - 2, by + h, 4, 3, '#fff');
+  lines.forEach((l, i) => { ctx.fillStyle = '#000'; ctx.textAlign = 'left'; ctx.fillText(l, bx + 4, by + 4 + i*10); });
+}
+
+function frame() {
+  S.t++;
+  ctx.save();
+  if (S.shake > 0) { ctx.translate((Math.random()-.5)*S.shake, (Math.random()-.5)*S.shake); S.shake *= 0.85; if (S.shake < .5) S.shake = 0; }
+  drawRoom(); drawMachine();
+
+  // player walk-in
+  if (S.mode === 'title') { S.px = Math.min(S.px + 0.8, 140); if (S.px >= 140) { S.mode = 'play'; log('Welcome to the Lucky Peso. Press <b>SPIN</b>.'); updateHud(); } }
+  drawPlayer(S.px, S.mode === 'over' || (S.mode === 'dying' && S.deathT > 90));
+
+  // thugs approach based on menace (or all-in when dying)
+  const n = S.mode === 'dying' || S.mode === 'over' ? 4 : menace();
+  S.thugs.forEach((th, i) => {
+    const active = i < n;
+    const target = !active ? 340 + i*20 : (S.mode === 'dying' || S.mode === 'over') ? 166 + i*16 : 300 - (n - i) * 22 - (n >= 4 ? 30 : 0);
+    th.x += (target - th.x) * 0.03;
+    if (th.x < 330) drawThug(th.x, i === 0 && n >= 4, i);
+  });
+
+  // coins
+  S.coins = S.coins.filter(c => { c.x += c.vx; c.y += c.vy; c.vy += 0.15; R(c.x, c.y, 3, 3, '#f7c948'); return c.y < 160; });
+
+  // spin resolution
+  if (S.spinning > 0) { S.spinning--; if (S.spinning % 6 === 0) beep(500 + Math.random()*300, .03); if (S.spinning === 0) settle(); }
+
+  // speech bubble from nearest thug
+  if (S.bubbleT > 0 && S.thugs[0].x < 320) { S.bubbleT--; drawBubble(S.thugs[0].x + 6, 108, S.bubble); }
+
+  // death sequence
+  if (S.mode === 'dying') {
+    S.deathT++;
+    if (S.deathT === 90) { S.flash = 1; S.shake = 14; beep(80, .4, 'sawtooth', .15); beep(60, .5, 'square', .1); }
+    if (S.deathT > 200) { S.mode = 'over'; updateHud(); }
+  }
+  if (S.flash > 0) { ctx.fillStyle = `rgba(255,255,255,${S.flash})`; ctx.fillRect(0,0,W,H); S.flash -= 0.05; }
+  if (S.mode === 'over' || (S.mode === 'dying' && S.deathT > 90)) R(S.px - 30, 160, 34, 4, '#8a0010');  // blood pool
+  ctx.restore();
+
+  if (S.mode === 'over') {
+    ctx.fillStyle = 'rgba(0,0,0,.72)'; ctx.fillRect(0,0,W,H);
+    text('GAME OVER', 160, 30, '#e63946', 16, 'center');
+    text(S.reason.length > 36 ? S.reason.slice(0,36) : S.reason, 160, 58, '#f1e9da', 8, 'center');
+    if (S.reason.length > 36) text(S.reason.slice(36), 160, 70, '#f1e9da', 8, 'center');
+    text('Spins: ' + S.spins + '   Peak: $' + S.peak, 160, 90, '#f7c948', 8, 'center');
+    text('Boss anger: ' + S.anger + '%', 160, 104, S.anger > 70 ? '#e63946' : '#f7c948', 8, 'center');
+    text('Pawn order:', 160, 120, '#9a8aa8', 8, 'center');
+    const order = S.pawned.length ? S.pawned.join(', ') : 'nothing';
+    text(order.slice(0, 38), 160, 132, '#f1e9da', 8, 'center'); if (order.length > 38) text(order.slice(38, 76), 160, 144, '#f1e9da', 8, 'center');
+    text('Click to try again', 160, 162, Math.floor(S.t/30)%2 ? '#4ade80' : '#1a5a30', 8, 'center');
+  } else if (S.mode === 'title' && S.px < 0) {
+    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0,0,W,H);
+    text('LAST SPIN', 160, 60, '#f7c948', 16, 'center');
+    text('Click to enter the casino', 160, 100, Math.floor(S.t/30)%2 ? '#f1e9da' : '#9a8aa8', 8, 'center');
+  }
+  requestAnimationFrame(frame);
+}
+
+// ---------- input ----------
+let started = false;
+function start() { if (!started) { started = true; S.px = 0; beep(440, .05); } }
+cv.addEventListener('click', () => { if (S.mode === 'over') { reset(); started = false; start(); } else if (!started) start(); else spin(); });
+$('spin').onclick = () => { if (S.mode === 'over') { reset(); started = false; start(); } else { start(); spin(); } };
+const BETS = [10, 25, 50, 100];
+function changeBet(d) { if (S.spinning) return; const i = Math.max(0, Math.min(BETS.length-1, BETS.indexOf(S.bet) + d)); S.bet = BETS[i]; updateHud(); }
+$('betUp').onclick = () => changeBet(1); $('betDown').onclick = () => changeBet(-1);
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); $('spin').click(); }
+  if (e.code === 'ArrowUp' || e.code === 'ArrowRight') changeBet(1);
+  if (e.code === 'ArrowDown' || e.code === 'ArrowLeft') changeBet(-1);
+});
+
+reset(); S.px = -20;
+// walk-in only begins after first click; hold the player off-screen until then
+(function holdTitle(){ if (!started) { S.px = -20; } requestAnimationFrame(holdTitle); })();
+frame();
+</script>
+</body>
+</html>
